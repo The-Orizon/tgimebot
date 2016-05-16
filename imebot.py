@@ -11,7 +11,9 @@ import sys
 import time
 import json
 import queue
+import base64
 import logging
+import hashlib
 import requests
 import functools
 import threading
@@ -64,7 +66,7 @@ def bot_api(method, **params):
 
 @async_func
 def answer(inline_query_id, results, **kwargs):
-    return bot_api('answerInlineQuery', inline_query_id=inline_query_id, results=results, **kwargs)
+    return bot_api('answerInlineQuery', inline_query_id=inline_query_id, results=json.dumps(results), **kwargs)
 
 def updatebotinfo():
     global CFG
@@ -80,7 +82,7 @@ def getupdates():
             logger_botapi.exception('Get updates failed.')
             continue
         if updates:
-            logger_botapi.debug('Messages coming.')
+            #logger_botapi.debug('Messages coming: %r', updates)
             CFG['offset'] = updates[-1]["update_id"] + 1
             for upd in updates:
                 MSG_Q.put(upd)
@@ -100,17 +102,25 @@ def parse_cmd(text: str):
 
 def handle_api_update(d: dict):
     logger_botapi.debug('Update: %r' % d)
-    if 'inline_query' in d:
-        try:
+    try:
+        if 'inline_query' in d:
             query = d['inline_query']
-            ...
-        except Exception:
-            logger_botapi.exception('Failed to process a message.')
+            text = query['query'].strip()
+            imeresult = rime_input(text)
+            if imeresult:
+                textid = base64.b64encode(hashlib.sha256(imeresult.encode('utf-8')).digest()).decode('ascii')
+                r = answer(query['id'], [{'type': 'article', 'id': textid, 'title': 'Terra Pinyin 1', 'input_message_content': {'message_text': imeresult}, 'description': imeresult}])
+                logger_botapi.debug(r)
+    except Exception:
+        logger_botapi.exception('Failed to process a message.')
 
 def rime_input(text: str):
     global RIME_P
+    if not text:
+        return ''
     with RIME_LCK:
-        text = text.strip() + b'\n'
+        logging.debug(text)
+        text = text.encode('utf-8') + b'\n'
         try:
             RIME_P.stdin.write(text)
             RIME_P.stdin.flush()
@@ -120,6 +130,7 @@ def rime_input(text: str):
             RIME_P.stdin.write(text)
             RIME_P.stdin.flush()
             result = RIME_P.stdout.readline().strip().decode('utf-8')
+        logging.debug(result)
     return result
 
 def load_config():
@@ -131,7 +142,7 @@ def save_config():
 if __name__ == '__main__':
     CFG = load_config()
     MSG_Q = queue.Queue()
-    RIME_CMD = ('data/rime_console',)
+    RIME_CMD = ('./rime_console',)
     RIME_LCK = threading.Lock()
     RIME_P = subprocess.Popen(RIME_CMD, stdin=subprocess.PIPE, stdout=subprocess.PIPE, cwd='data')
     try:
