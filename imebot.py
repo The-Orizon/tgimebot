@@ -114,7 +114,7 @@ def parse_cmd(text: str):
     expr = t[1] if len(t) > 1 else ''
     return (cmd[0][1:], expr.strip())
 
-articleid = lambda s: base64.b64encode(hashlib.sha256(s.encode('utf-8')).digest()).decode('ascii')
+articleid = lambda s: str(time.time())
 
 def handle_api_update(d: dict):
     logger_botapi.debug('Update: %r' % d)
