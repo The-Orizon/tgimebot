@@ -20,6 +20,9 @@ import threading
 import subprocess
 import concurrent.futures
 
+import zhconv
+import simpleime
+
 logging.basicConfig(stream=sys.stderr, format='%(asctime)s [%(name)s:%(levelname)s] %(message)s', level=logging.DEBUG if sys.argv[-1] == '-v' else logging.INFO)
 
 logger_botapi = logging.getLogger('botapi')
@@ -65,6 +68,17 @@ def bot_api(method, **params):
     return ret['result']
 
 @async_func
+def sendmsg(text, chat_id, reply_to_message_id=None):
+    text = text.strip()
+    if not text:
+        logger_botapi.warning('Empty message ignored: %s, %s' % (chat_id, reply_to_message_id))
+        return
+    logger_botapi.info('sendMessage(%s): %s' % (len(text), text[:20]))
+    if len(text) > 2000:
+        text = text[:1999] + '…'
+    return bot_api('sendMessage', chat_id=chat_id, text=text, reply_to_message_id=reply_to_message_id)
+
+@async_func
 def answer(inline_query_id, results, **kwargs):
     return bot_api('answerInlineQuery', inline_query_id=inline_query_id, results=json.dumps(results), **kwargs)
 
@@ -100,19 +114,42 @@ def parse_cmd(text: str):
     expr = t[1] if len(t) > 1 else ''
     return (cmd[0][1:], expr.strip())
 
+articleid = lambda s: base64.b64encode(hashlib.sha256(s.encode('utf-8')).digest()).decode('ascii')
+
 def handle_api_update(d: dict):
     logger_botapi.debug('Update: %r' % d)
     try:
         if 'inline_query' in d:
             query = d['inline_query']
             text = query['query'].strip()
-            imeresult = rime_input(text)
+            imeresult = simpleime_input(text)
             if imeresult:
-                textid = base64.b64encode(hashlib.sha256(imeresult.encode('utf-8')).digest()).decode('ascii')
-                r = answer(query['id'], [{'type': 'article', 'id': textid, 'title': 'Terra Pinyin 1', 'input_message_content': {'message_text': imeresult}, 'description': imeresult}])
+                r = answer(query['id'], [{'type': 'article', 'id': articleid(ret), 'title': ret, 'input_message_content': {'message_text': ret}, 'description': desc} for ret, desc in imeresult])
                 logger_botapi.debug(r)
+                logger_botapi.info('%s -> %s', text, imeresult)
+        elif 'message' in d:
+            msg = d['message']
+            if msg['chat']['type'] == 'private':
+                text = msg.get('text', '').strip()
+                if text == '/start':
+                    response = 'This is an inline bot. Send me text directly or use @' + CFG['username']
+                else:
+                    imeresult = simpleime_input(msg.get('text', '').strip())
+                    if imeresult:
+                        response = imeresult[0][0]
+                if response:
+                    sendmsg(response, msg['chat']['id'], msg['message_id'])
     except Exception:
         logger_botapi.exception('Failed to process a message.')
+
+def simpleime_input(text: str):
+    if not text:
+        return []
+    results = []
+    result = simpleime.pinyininput(text)
+    results.append((zhconv.convert(result, 'zh-hans'), 'Simple IME (zh-hans)'))
+    results.append((result, 'Simple IME (zh-hant)'))
+    return results
 
 def rime_input(text: str):
     global RIME_P
@@ -142,9 +179,7 @@ def save_config():
 if __name__ == '__main__':
     CFG = load_config()
     MSG_Q = queue.Queue()
-    RIME_CMD = ('./rime_console',)
-    RIME_LCK = threading.Lock()
-    RIME_P = subprocess.Popen(RIME_CMD, stdin=subprocess.PIPE, stdout=subprocess.PIPE, cwd='data')
+    simpleime.loaddict()
     try:
         updatebotinfo()
         apithr = threading.Thread(target=getupdates)
